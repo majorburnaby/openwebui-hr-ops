@@ -877,18 +877,29 @@ const COL_ORDER = ['rank','employee_id','full_name','department','outlet',
 
 // ── Parse TOOL_REF block ──────────────────────────────
 function parseToolRef(text) {
+  // Match all TOOL_REF variants:
+  // 1. TOOL_REF {"tool":"..."}          single line (what prompt now instructs)
+  // 2. TOOL_REF\n{...}                  multi-line
+  // 3. ```json\nTOOL_REF\n{...}\n```   backtick-wrapped
   const patterns = [
-    /```(?:json)?\s*TOOL_REF\s*([\s\S]*?)```/,
-    /TOOL_REF\s*(\{[\s\S]*)/,
+    /```(?:json)?\s*TOOL_REF\s*([\s\S]*?)```/,  // backtick wrapped
+    /TOOL_REF\s*(\{[\s\S]*)/,                    // anything after TOOL_REF
   ];
   for (const re of patterns) {
     const m = text.match(re);
     if (!m) continue;
-    const jsonStr = extractOutermostObject(m[1].trim());
+    const raw = m[1].trim();
+    // Try direct parse first (single-line JSON)
+    try {
+      const data = JSON.parse(raw.split('\n')[0].trim());
+      if (data.tool) return data;
+    } catch {}
+    // Try extracting outermost object (multi-line)
+    const jsonStr = extractOutermostObject(raw);
     if (!jsonStr) continue;
     try {
       const data = JSON.parse(jsonStr);
-      if (data.tool && data.title) return data;
+      if (data.tool) return data;
     } catch {}
   }
   return null;
@@ -1156,6 +1167,11 @@ function formatMarkdown(text) {
   const blockHtml = toolRef  ? renderToolRefBlock(toolRef)
                   : listData ? renderListBlock(listData)
                   : '';
+  // Debug: log what Dify sent so we can see if TOOL_REF is present
+  if (text.includes('TOOL_REF')) console.log('[TOOL_REF found]', text.substring(text.indexOf('TOOL_REF'), text.indexOf('TOOL_REF') + 200));
+  else if (text.includes('LIST_DATA')) console.log('[LIST_DATA found]');
+  else if (text.length > 50) console.log('[No marker] full text:', text.substring(0, 300));
+
   return mdHtml + blockHtml;
 }
 
