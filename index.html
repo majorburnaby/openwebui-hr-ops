@@ -943,5 +943,623 @@ document.querySelector('.main').addEventListener('click', () => {
   inputEl.focus();
 })();
 </script>
+
+<!-- ══════════════════════════════════════════════════
+     FLOATING CHAT WIDGET
+     Completely independent from the main full-page chat.
+     Has its own session state, localStorage key, and Dify calls.
+════════════════════════════════════════════════════ -->
+<style>
+  /* ── Floating button ── */
+  #fab {
+    position: fixed;
+    bottom: 28px;
+    right: 28px;
+    z-index: 1000;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-end;
+    gap: 10px;
+  }
+
+  /* Mode picker — shown once before first open */
+  #fab-picker {
+    display: none;
+    flex-direction: column;
+    gap: 6px;
+    align-items: flex-end;
+    animation: fabSlideUp 0.18s ease both;
+  }
+
+  #fab-picker.visible { display: flex; }
+
+  @keyframes fabSlideUp {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: translateY(0); }
+  }
+
+  .fab-option {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    background: #1e2333;
+    border: 1px solid rgba(255,255,255,0.13);
+    border-radius: 99px;
+    padding: 8px 14px 8px 10px;
+    cursor: pointer;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    font-weight: 500;
+    color: #e8eaf0;
+    white-space: nowrap;
+    transition: all 0.15s;
+    box-shadow: 0 4px 16px rgba(0,0,0,0.35);
+  }
+
+  .fab-option:hover { border-color: #4f7bff; color: #7c9eff; background: rgba(79,123,255,0.15); }
+
+  .fab-option-icon {
+    width: 28px; height: 28px;
+    border-radius: 50%;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+
+  .fab-option-icon.blue   { background: rgba(79,123,255,0.2);  color: #7c9eff; }
+  .fab-option-icon.purple { background: rgba(124,79,255,0.2);  color: #b97cff; }
+  .fab-option-icon svg { width: 14px; height: 14px; }
+
+  /* Main FAB button */
+  #fab-btn {
+    width: 54px; height: 54px;
+    background: #4f7bff;
+    border: none; border-radius: 50%;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    box-shadow: 0 4px 20px rgba(79,123,255,0.45);
+    transition: all 0.2s;
+    position: relative;
+    flex-shrink: 0;
+  }
+
+  #fab-btn:hover { background: #7c9eff; transform: scale(1.07); box-shadow: 0 6px 24px rgba(79,123,255,0.55); }
+  #fab-btn:active { transform: scale(0.95); }
+  #fab-btn svg { width: 22px; height: 22px; transition: transform 0.2s; }
+  #fab-btn.open svg { transform: rotate(45deg); }
+
+  /* Unread badge */
+  #fab-badge {
+    position: absolute;
+    top: -2px; right: -2px;
+    width: 18px; height: 18px;
+    background: #ff5c5c;
+    border: 2px solid #0f1117;
+    border-radius: 50%;
+    font-size: 10px; font-weight: 700;
+    color: #fff;
+    display: none;
+    align-items: center; justify-content: center;
+    font-family: 'DM Sans', sans-serif;
+  }
+
+  #fab-badge.visible { display: flex; }
+
+  /* ── Popup chat window ── */
+  #widget {
+    position: fixed;
+    bottom: 96px;
+    right: 28px;
+    width: 370px;
+    height: 540px;
+    background: #0f1117;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 20px;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    z-index: 999;
+    box-shadow: 0 16px 56px rgba(0,0,0,0.6);
+    transform-origin: bottom right;
+    transform: scale(0.88) translateY(12px);
+    opacity: 0;
+    pointer-events: none;
+    transition: transform 0.22s cubic-bezier(0.34,1.56,0.64,1), opacity 0.18s ease;
+  }
+
+  #widget.open {
+    transform: scale(1) translateY(0);
+    opacity: 1;
+    pointer-events: all;
+  }
+
+  /* Widget header */
+  .w-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 14px 16px;
+    background: #181c27;
+    border-bottom: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+    gap: 10px;
+  }
+
+  .w-header-left { display: flex; align-items: center; gap: 9px; }
+
+  .w-avatar {
+    width: 32px; height: 32px;
+    background: linear-gradient(135deg,#4f7bff,#7c4fff);
+    border-radius: 10px;
+    display: flex; align-items: center; justify-content: center;
+    flex-shrink: 0;
+  }
+  .w-avatar svg { width: 16px; height: 16px; }
+
+  .w-title    { font-size: 13.5px; font-weight: 600; color: #e8eaf0; }
+  .w-subtitle { font-size: 11px; color: #7a8099; margin-top: 1px; }
+
+  .w-header-right { display: flex; gap: 6px; }
+
+  .w-btn {
+    width: 28px; height: 28px;
+    background: transparent;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 7px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    color: #7a8099;
+    transition: all 0.12s;
+  }
+  .w-btn:hover { background: rgba(255,255,255,0.06); color: #e8eaf0; border-color: rgba(255,255,255,0.2); }
+  .w-btn svg { width: 12px; height: 12px; }
+
+  /* Widget messages */
+  #w-msgs {
+    flex: 1;
+    overflow-y: auto;
+    padding: 14px 14px 6px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+    scroll-behavior: smooth;
+  }
+  #w-msgs::-webkit-scrollbar { width: 3px; }
+  #w-msgs::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 3px; }
+
+  /* Greeting bubble shown by default */
+  .w-greeting {
+    background: #1e2333;
+    border: 1px solid rgba(255,255,255,0.07);
+    border-radius: 12px 12px 12px 4px;
+    padding: 10px 12px;
+    font-size: 13px;
+    color: #e8eaf0;
+    line-height: 1.55;
+    max-width: 90%;
+    animation: fadeUp 0.2s ease both;
+  }
+
+  /* Widget message bubbles */
+  .w-msg { display: flex; gap: 7px; animation: fadeUp 0.18s ease both; }
+  .w-msg.user { flex-direction: row-reverse; }
+
+  .w-av {
+    width: 24px; height: 24px;
+    border-radius: 6px;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 9px; font-weight: 700;
+    flex-shrink: 0; margin-top: 2px;
+  }
+  .w-msg.user .w-av { background: #4f7bff; color: #fff; }
+  .w-msg.bot  .w-av { background: linear-gradient(135deg,#4f7bff,#7c4fff); color: #fff; }
+
+  .w-bubble {
+    max-width: calc(100% - 34px);
+    padding: 8px 11px;
+    border-radius: 12px;
+    font-size: 13px;
+    line-height: 1.55;
+    word-break: break-word;
+  }
+  .w-msg.user .w-bubble { background: #252b3d; border-bottom-right-radius: 3px; color: #e8eaf0; }
+  .w-msg.bot  .w-bubble { background: #1e2333; border: 1px solid rgba(255,255,255,0.07); border-bottom-left-radius: 3px; color: #e8eaf0; }
+  .w-bubble.error { color: #ff8080; border-color: rgba(255,80,80,0.2); }
+
+  .w-bubble strong { color: #fff; font-weight: 600; }
+  .w-bubble p      { margin: 0 0 5px; }
+  .w-bubble p:last-child { margin-bottom: 0; }
+  .w-bubble ul     { padding-left: 16px; margin: 4px 0; display: flex; flex-direction: column; gap: 2px; }
+  .w-bubble h3     { font-size: 12px; font-weight: 600; color: #7c9eff; margin: 8px 0 3px; text-transform: uppercase; letter-spacing: 0.04em; }
+  .w-bubble h3:first-child { margin-top: 0; }
+  .w-bubble code   { font-family: 'DM Mono', monospace; font-size: 11.5px; background: rgba(79,123,255,0.15); color: #7c9eff; padding: 1px 4px; border-radius: 3px; }
+  .w-bubble hr     { border: none; border-top: 1px solid rgba(255,255,255,0.07); margin: 7px 0; }
+
+  .w-typing { display: flex; gap: 4px; padding: 4px 2px; align-items: center; }
+  .w-typing span { width: 5px; height: 5px; background: #7a8099; border-radius: 50%; animation: dotBounce 1.2s ease-in-out infinite; }
+  .w-typing span:nth-child(2){animation-delay:.2s} .w-typing span:nth-child(3){animation-delay:.4s}
+
+  /* Widget input */
+  .w-input-wrap {
+    display: flex;
+    align-items: flex-end;
+    gap: 7px;
+    padding: 10px 12px;
+    background: #181c27;
+    border-top: 1px solid rgba(255,255,255,0.07);
+    flex-shrink: 0;
+  }
+
+  #w-input {
+    flex: 1;
+    background: #1e2333;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 10px;
+    outline: none;
+    color: #e8eaf0;
+    font-family: 'DM Sans', sans-serif;
+    font-size: 13px;
+    line-height: 1.45;
+    padding: 8px 11px;
+    resize: none;
+    max-height: 90px;
+    min-height: 36px;
+    transition: border-color 0.12s;
+  }
+  #w-input:focus      { border-color: #4f7bff; }
+  #w-input::placeholder { color: #7a8099; }
+  #w-input::-webkit-scrollbar { width: 2px; }
+
+  #w-send {
+    width: 34px; height: 34px;
+    background: #4f7bff;
+    border: none; border-radius: 9px;
+    cursor: pointer;
+    display: flex; align-items: center; justify-content: center;
+    transition: all 0.13s; flex-shrink: 0;
+  }
+  #w-send:hover:not(:disabled) { background: #7c9eff; transform: scale(1.06); }
+  #w-send:disabled { opacity: 0.4; cursor: not-allowed; }
+  #w-send svg { width: 14px; height: 14px; }
+
+  /* Expand-to-full button tooltip */
+  .w-expand-hint {
+    font-size: 10.5px;
+    color: #7a8099;
+    text-align: center;
+    padding: 0 12px 8px;
+    background: #181c27;
+  }
+
+  @media (max-width: 480px) {
+    #widget { width: calc(100vw - 24px); right: 12px; bottom: 80px; }
+    #fab    { right: 16px; bottom: 20px; }
+  }
+</style>
+
+<!-- FAB + picker -->
+<div id="fab">
+  <div id="fab-picker">
+    <button class="fab-option" onclick="openWidget()">
+      <span class="fab-option-icon purple">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+        </svg>
+      </span>
+      Chat Pop-up
+    </button>
+    <button class="fab-option" onclick="openFullPage()">
+      <span class="fab-option-icon blue">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <rect x="3" y="3" width="18" height="18" rx="2"/>
+          <path d="M3 9h18M9 21V9"/>
+        </svg>
+      </span>
+      Full Page Chat
+    </button>
+  </div>
+
+  <button id="fab-btn" onclick="toggleFabMenu()" title="HR Helpdesk">
+    <div id="fab-badge"></div>
+    <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+      <path d="M21 15a2 2 0 01-2 2H7l-4 4V5a2 2 0 012-2h14a2 2 0 012 2z"/>
+    </svg>
+  </button>
+</div>
+
+<!-- Popup chat widget -->
+<div id="widget">
+  <div class="w-header">
+    <div class="w-header-left">
+      <div class="w-avatar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2" stroke-linecap="round">
+          <path d="M17 21v-2a4 4 0 00-4-4H5a4 4 0 00-4 4v2"/>
+          <circle cx="9" cy="7" r="4"/>
+          <path d="M23 21v-2a4 4 0 00-3-3.87M16 3.13a4 4 0 010 7.75"/>
+        </svg>
+      </div>
+      <div>
+        <div class="w-title">HR Helpdesk</div>
+        <div class="w-subtitle">Powered by Dify AI</div>
+      </div>
+    </div>
+    <div class="w-header-right">
+      <button class="w-btn" onclick="wNewChat()" title="New chat">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <path d="M12 5v14M5 12h14"/>
+        </svg>
+      </button>
+      <button class="w-btn" onclick="openFullPage()" title="Open full page">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round">
+          <path d="M15 3h6v6M9 21H3v-6M21 3l-7 7M3 21l7-7"/>
+        </svg>
+      </button>
+      <button class="w-btn" onclick="closeWidget()" title="Close">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round">
+          <path d="M18 6L6 18M6 6l12 12"/>
+        </svg>
+      </button>
+    </div>
+  </div>
+
+  <div id="w-msgs">
+    <div class="w-greeting">
+      Halo! Saya HR Helpdesk Assistant. Ada yang bisa saya bantu tentang data karyawan? 👋
+    </div>
+  </div>
+
+  <div class="w-input-wrap">
+    <textarea
+      id="w-input" rows="1"
+      placeholder="Ketik pertanyaan..."
+      autocomplete="off" spellcheck="false"
+    ></textarea>
+    <button id="w-send" onclick="wSend()" title="Kirim">
+      <svg viewBox="0 0 24 24" fill="none" stroke="white" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+        <line x1="22" y1="2" x2="11" y2="13"/>
+        <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+      </svg>
+    </button>
+  </div>
+  <div class="w-expand-hint">
+    <span onclick="openFullPage()" style="cursor:pointer;text-decoration:underline;text-underline-offset:2px">Buka full page</span>
+    untuk riwayat lengkap
+  </div>
+</div>
+
+<script>
+// ══════════════════════════════════════════════════════
+// WIDGET STATE (separate from main page)
+// ══════════════════════════════════════════════════════
+let wConvId    = '';   // Dify conversation_id for widget session
+let wLoading   = false;
+let fabOpen    = false;
+let widgetOpen = false;
+
+const widgetEl  = document.getElementById('widget');
+const fabBtn    = document.getElementById('fab-btn');
+const fabPicker = document.getElementById('fab-picker');
+const fabBadge  = document.getElementById('fab-badge');
+const wMsgs     = document.getElementById('w-msgs');
+const wInput    = document.getElementById('w-input');
+const wSendBtn  = document.getElementById('w-send');
+
+// ── FAB menu toggle ───────────────────────────────────
+function toggleFabMenu() {
+  if (widgetOpen) { closeWidget(); return; }
+  fabOpen = !fabOpen;
+  fabPicker.classList.toggle('visible', fabOpen);
+  fabBtn.classList.toggle('open', fabOpen);
+}
+
+// ── Open widget popup ─────────────────────────────────
+function openWidget() {
+  fabOpen = false;
+  fabPicker.classList.remove('visible');
+  widgetOpen = true;
+  widgetEl.classList.add('open');
+  fabBtn.classList.add('open');
+  hideBadge();
+  setTimeout(() => wInput.focus(), 240);
+}
+
+// ── Close widget ──────────────────────────────────────
+function closeWidget() {
+  widgetOpen = false;
+  fabOpen    = false;
+  widgetEl.classList.remove('open');
+  fabBtn.classList.remove('open');
+  fabPicker.classList.remove('visible');
+}
+
+// ── Open full page (just close the widget, user is already on it) ──
+function openFullPage() {
+  closeWidget();
+  // Scroll to top of page and focus input
+  window.scrollTo(0, 0);
+  document.getElementById('user-input')?.focus();
+}
+
+// ── New chat in widget ────────────────────────────────
+function wNewChat() {
+  wConvId = '';
+  wMsgs.innerHTML = `
+    <div class="w-greeting">
+      Halo! Saya HR Helpdesk Assistant. Ada yang bisa saya bantu tentang data karyawan? 👋
+    </div>`;
+  wInput.value = '';
+  wInput.style.height = 'auto';
+  wSetLoading(false);
+  wInput.focus();
+}
+
+// ── Badge helpers ─────────────────────────────────────
+function showBadge(n) {
+  fabBadge.textContent = n > 9 ? '9+' : n;
+  fabBadge.classList.add('visible');
+}
+function hideBadge() {
+  fabBadge.classList.remove('visible');
+}
+
+// ── Loading state ─────────────────────────────────────
+function wSetLoading(val) {
+  wLoading = val;
+  wSendBtn.disabled = val;
+}
+
+// ── Scroll widget to bottom ───────────────────────────
+function wScrollBottom() {
+  requestAnimationFrame(() => { wMsgs.scrollTop = wMsgs.scrollHeight; });
+}
+
+// ── Add message to widget ─────────────────────────────
+function wAddMsg(role, content = '') {
+  const msg    = document.createElement('div');
+  msg.className = `w-msg ${role}`;
+
+  const av = document.createElement('div');
+  av.className = 'w-av';
+  av.textContent = role === 'user' ? 'KU' : 'AI';
+
+  const bub = document.createElement('div');
+  bub.className = 'w-bubble';
+  if (content && role === 'user') bub.textContent = content;
+
+  msg.appendChild(av);
+  msg.appendChild(bub);
+  wMsgs.appendChild(msg);
+  wScrollBottom();
+  return bub;
+}
+
+function wAddTyping() {
+  const msg    = document.createElement('div');
+  msg.className = 'w-msg bot';
+  msg.id        = 'w-typing';
+  const av = document.createElement('div');
+  av.className  = 'w-av'; av.textContent = 'AI';
+  const bub = document.createElement('div');
+  bub.className = 'w-bubble';
+  bub.innerHTML = `<div class="w-typing"><span></span><span></span><span></span></div>`;
+  msg.appendChild(av); msg.appendChild(bub);
+  wMsgs.appendChild(msg);
+  wScrollBottom();
+}
+
+function wRemoveTyping() {
+  document.getElementById('w-typing')?.remove();
+}
+
+// ── Send from widget ──────────────────────────────────
+async function wSend() {
+  const query = wInput.value.trim();
+  if (!query || wLoading) return;
+
+  wInput.value = '';
+  wInput.style.height = 'auto';
+  wSetLoading(true);
+
+  wAddMsg('user', query);
+  wAddTyping();
+
+  let botBub  = null;
+  let fullTxt = '';
+
+  try {
+    const res = await fetch('/api/chat', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        query,
+        conversation_id: wConvId,
+        user: 'hr-widget-' + getUID(),
+      }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail || err.error || `HTTP ${res.status}`);
+    }
+
+    const reader  = res.body.getReader();
+    const decoder = new TextDecoder();
+    let   buffer  = '';
+    let   started = false;
+
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+
+      for (const line of lines) {
+        if (!line.startsWith('data: ')) continue;
+        const raw = line.slice(6).trim();
+        if (!raw || raw === '[DONE]') continue;
+        let evt;
+        try { evt = JSON.parse(raw); } catch { continue; }
+
+        if (evt.conversation_id && !wConvId) wConvId = evt.conversation_id;
+
+        const chunk = evt.answer ?? (evt.event === 'agent_message' ? evt.answer : null) ?? evt.text ?? '';
+        if (chunk) {
+          if (!started) {
+            wRemoveTyping();
+            botBub  = wAddMsg('bot');
+            started = true;
+          }
+          fullTxt += chunk;
+          botBub.innerHTML = formatMarkdown(fullTxt) + '<span style="opacity:.5">▌</span>';
+          wScrollBottom();
+        }
+      }
+    }
+
+    if (botBub) {
+      botBub.innerHTML = formatMarkdown(fullTxt);
+    } else {
+      wRemoveTyping();
+      const b = wAddMsg('bot');
+      b.textContent = 'Maaf, tidak ada respons. Silakan coba lagi.';
+    }
+
+    // Show badge if widget is closed
+    if (!widgetOpen) showBadge(1);
+
+  } catch (err) {
+    wRemoveTyping();
+    const b = wAddMsg('bot');
+    b.classList.add('error');
+    b.textContent = '⚠️ ' + (err.message || 'Terjadi kesalahan.');
+  } finally {
+    wSetLoading(false);
+    wScrollBottom();
+    wInput.focus();
+  }
+}
+
+// ── Widget input handlers ─────────────────────────────
+wInput.addEventListener('input', () => {
+  wInput.style.height = 'auto';
+  wInput.style.height = Math.min(wInput.scrollHeight, 90) + 'px';
+});
+
+wInput.addEventListener('keydown', e => {
+  if (e.key === 'Enter' && !e.shiftKey) {
+    e.preventDefault();
+    if (!wLoading) wSend();
+  }
+});
+
+// Close picker when clicking outside
+document.addEventListener('click', e => {
+  if (fabOpen && !document.getElementById('fab').contains(e.target)) {
+    fabOpen = false;
+    fabPicker.classList.remove('visible');
+    fabBtn.classList.remove('open');
+  }
+});
+</script>
 </body>
 </html>
