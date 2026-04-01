@@ -873,18 +873,41 @@ const COL_ORDER = ['rank','employee_id','full_name','department','outlet',
   'total','total_employees','resign_count','turnover_pct'];
 
 function parseListData(text) {
-  // Match ```json LIST_DATA { ... } ``` block
-  const m = text.match(/```json\s*LIST_DATA\s*(\{[\s\S]*?\})\s*```/);
-  if (!m) return null;
-  try {
-    const data = JSON.parse(m[1]);
-    if (!Array.isArray(data.rows) || data.rows.length === 0) return null;
-    return data;
-  } catch { return null; }
+  // Handle all variants Dify might output:
+  // 1. ```json LIST_DATA { ... } ```  (ideal — with backticks)
+  // 2. LIST_DATA { ... }              (raw — what Dify actually sends without backticks)
+  const patterns = [
+    /```(?:json)?\s*LIST_DATA\s*([\s\S]*?)```/,  // backtick-wrapped
+    /LIST_DATA\s*(\{[\s\S]*)/,                    // raw to end of string
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m) continue;
+    const jsonStr = extractOutermostObject(m[1].trim());
+    if (!jsonStr) continue;
+    try {
+      const data = JSON.parse(jsonStr);
+      if (Array.isArray(data.rows) && data.rows.length > 0) return data;
+    } catch {}
+  }
+  return null;
+}
+
+function extractOutermostObject(str) {
+  let depth = 0, start = -1;
+  for (let i = 0; i < str.length; i++) {
+    if (str[i] === '{') { if (start === -1) start = i; depth++; }
+    else if (str[i] === '}') { if (--depth === 0 && start !== -1) return str.slice(start, i + 1); }
+  }
+  return null;
 }
 
 function stripListDataBlock(text) {
-  return text.replace(/```json\s*LIST_DATA\s*\{[\s\S]*?\}\s*```/g, '').trim();
+  // Strip backtick-wrapped variant
+  text = text.replace(/```(?:json)?\s*LIST_DATA[\s\S]*?```/g, '');
+  // Strip raw LIST_DATA block (everything from LIST_DATA onward)
+  text = text.replace(/LIST_DATA[\s\S]*/g, '');
+  return text.trim();
 }
 
 function sortedCols(row) {
