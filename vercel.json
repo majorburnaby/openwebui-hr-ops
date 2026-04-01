@@ -1,13 +1,9 @@
 {
   "version": 2,
   "routes": [
-    {
-      "src": "/api/chat",
-      "dest": "/api/chat.js"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/index.html"
-    }
+    { "src": "/api/chat",  "dest": "/api/chat.js"  },
+    { "src": "/api/csv",   "dest": "/api/csv.js"   },
+    { "src": "/api/debug", "dest": "/api/debug.js" },
+    { "src": "/(.*)",      "dest": "/index.html"   }
   ]
 }
