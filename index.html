@@ -851,34 +851,54 @@ function removeTyping() {
 }
 
 // ══════════════════════════════════════════════════════
-// LIST_DATA PARSER + CSV DOWNLOAD
+// TOOL_REF PARSER + CSV DOWNLOAD
 // ══════════════════════════════════════════════════════
+// New approach: Dify outputs a lightweight TOOL_REF marker.
+// Frontend calls MCP directly to get ALL rows for CSV.
+// This bypasses the LLM token limit problem with large JSON outputs.
 
-// Column label mapping for table headers
+const MCP_BASE = 'https://hr-mcp-server.vercel.app';
+
 const COL_LABELS = {
   employee_id:'ID', full_name:'Nama', department:'Department',
   outlet:'Outlet', job_position:'Jabatan', job_level:'Level',
   employment_status:'Tipe', employee_data_status:'Status',
   join_date:'Bergabung', end_employment_date:'Akhir Kontrak',
   resign_date:'Resign', branch:'Branch', total:'Total',
-  resign_count:'Resign', turnover_pct:'Turnover%',
+  resign_count:'Jumlah Resign', turnover_pct:'Turnover%',
   total_employees:'Total Karyawan', days_since_join:'Hari Bergabung',
   rank:'#',
 };
 
-// Priority column order for table display
 const COL_ORDER = ['rank','employee_id','full_name','department','outlet',
   'job_position','job_level','employment_status','employee_data_status',
   'join_date','end_employment_date','resign_date','branch',
   'total','total_employees','resign_count','turnover_pct'];
 
-function parseListData(text) {
-  // Handle all variants Dify might output:
-  // 1. ```json LIST_DATA { ... } ```  (ideal — with backticks)
-  // 2. LIST_DATA { ... }              (raw — what Dify actually sends without backticks)
+// ── Parse TOOL_REF block ──────────────────────────────
+function parseToolRef(text) {
   const patterns = [
-    /```(?:json)?\s*LIST_DATA\s*([\s\S]*?)```/,  // backtick-wrapped
-    /LIST_DATA\s*(\{[\s\S]*)/,                    // raw to end of string
+    /```(?:json)?\s*TOOL_REF\s*([\s\S]*?)```/,
+    /TOOL_REF\s*(\{[\s\S]*)/,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m) continue;
+    const jsonStr = extractOutermostObject(m[1].trim());
+    if (!jsonStr) continue;
+    try {
+      const data = JSON.parse(jsonStr);
+      if (data.tool && data.title) return data;
+    } catch {}
+  }
+  return null;
+}
+
+// ── Also support old LIST_DATA (backward compat) ──────
+function parseListData(text) {
+  const patterns = [
+    /```(?:json)?\s*LIST_DATA\s*([\s\S]*?)```/,
+    /LIST_DATA\s*(\{[\s\S]*)/,
   ];
   for (const re of patterns) {
     const m = text.match(re);
@@ -902,48 +922,105 @@ function extractOutermostObject(str) {
   return null;
 }
 
-function stripListDataBlock(text) {
-  // Strip backtick-wrapped variant
+function stripDataBlock(text) {
+  text = text.replace(/```(?:json)?\s*TOOL_REF[\s\S]*?```/g, '');
+  text = text.replace(/TOOL_REF[\s\S]*/g, '');
   text = text.replace(/```(?:json)?\s*LIST_DATA[\s\S]*?```/g, '');
-  // Strip raw LIST_DATA block (everything from LIST_DATA onward)
   text = text.replace(/LIST_DATA[\s\S]*/g, '');
   return text.trim();
 }
 
 function sortedCols(row) {
-  const keys = Object.keys(row);
+  const keys    = Object.keys(row);
   const ordered = COL_ORDER.filter(k => keys.includes(k));
   const rest    = keys.filter(k => !COL_ORDER.includes(k));
   return [...ordered, ...rest];
 }
 
+// ── Build MCP URL from TOOL_REF ───────────────────────
+function buildMcpUrl(tool, params) {
+  const base = `${MCP_BASE}/tools/${tool}`;
+  if (!params || Object.keys(params).length === 0) return base;
+  const qs = new URLSearchParams(
+    Object.entries(params).filter(([,v]) => v !== null && v !== undefined)
+  ).toString();
+  return qs ? `${base}?${qs}` : base;
+}
+
+// ── Extract rows from MCP response ───────────────────
+function extractRows(data) {
+  // Different tools return data in different keys
+  for (const key of ['employees','outlets','levels','branches','positions','by_status']) {
+    if (Array.isArray(data[key]) && data[key].length > 0) return data[key];
+  }
+  // list_active_by_status returns {by_status: {Permanent:[...], Contract:[...]}}
+  if (data.by_status && typeof data.by_status === 'object') {
+    return Object.entries(data.by_status).flatMap(([status, rows]) =>
+      rows.map(r => ({ ...r, employment_status: status }))
+    );
+  }
+  return [];
+}
+
+// ── Render TOOL_REF block (with lazy CSV fetch) ───────
+function renderToolRefBlock(ref) {
+  const { tool, params, title, filename, total } = ref;
+  const safeTitle    = escHtml(title || 'Hasil');
+  const safeFilename = escHtml(filename || 'hr-data');
+  const displayTotal = total || '?';
+
+  return `
+    <div class="list-block">
+      <div class="list-header">
+        <span class="list-title">${safeTitle}</span>
+        <button class="csv-btn" id="csvbtn-${Date.now()}"
+          onclick="downloadFromMCP(this)"
+          data-tool="${escHtml(tool)}"
+          data-params='${escAttr(JSON.stringify(params || {}))}' 
+          data-filename="${safeFilename}"
+          data-title="${safeTitle}">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
+            <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+            <polyline points="7 10 12 15 17 10"/>
+            <line x1="12" y1="15" x2="12" y2="3"/>
+          </svg>
+          Unduh CSV (${displayTotal} data)
+        </button>
+      </div>
+      <div class="list-more">
+        Klik <strong>Unduh CSV</strong> untuk download semua <strong>${displayTotal}</strong> data lengkap.
+      </div>
+    </div>`;
+}
+
+// ── Render old LIST_DATA block (backward compat) ──────
 function renderListBlock(data) {
   const { title, filename, total, rows } = data;
-  const preview  = rows.slice(0, 5);
-  const hasMore  = rows.length > 5;
-  const cols     = sortedCols(rows[0]);
+  const preview = rows.slice(0, 5);
+  const hasMore = rows.length > 5 || (total && total > rows.length);
+  const cols    = sortedCols(rows[0]);
 
-  // Build header
   const thCells = cols.map(k =>
     `<th>${escHtml(COL_LABELS[k] || k.replace(/_/g,' '))}</th>`
   ).join('');
 
-  // Build rows
   const trRows = preview.map(row =>
     `<tr>${cols.map(k => `<td>${escHtml(String(row[k] ?? '—'))}</td>`).join('')}</tr>`
   ).join('');
 
   const moreText = hasMore
-    ? `<div class="list-more">Menampilkan 5 dari <strong>${total}</strong> data. Unduh CSV untuk data lengkap.</div>`
-    : `<div class="list-more">Total <strong>${total}</strong> data.</div>`;
+    ? `<div class="list-more">Menampilkan 5 dari <strong>${total || rows.length}</strong> data. Unduh CSV untuk data lengkap.</div>`
+    : `<div class="list-more">Total <strong>${total || rows.length}</strong> data.</div>`;
 
   const csvBtn = `
-    <button class="csv-btn" onclick="downloadCSV(this)" 
+    <button class="csv-btn" onclick="downloadCSV(this)"
       data-rows='${escAttr(JSON.stringify(rows))}'
       data-filename="${escHtml(filename || 'hr-data')}"
       data-title="${escHtml(title || 'Data HR')}">
       <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" style="width:14px;height:14px">
-        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/><polyline points="7 10 12 15 17 10"/><line x1="12" y1="15" x2="12" y2="3"/>
+        <path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4"/>
+        <polyline points="7 10 12 15 17 10"/>
+        <line x1="12" y1="15" x2="12" y2="3"/>
       </svg>
       Unduh CSV${hasMore ? ` (${total} data)` : ''}
     </button>`;
@@ -968,24 +1045,69 @@ function escAttr(str) {
   return str.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
 }
 
-async function downloadCSV(btn) {
-  const rows     = JSON.parse(btn.dataset.rows);
+// ── Download CSV by calling MCP directly ──────────────
+async function downloadFromMCP(btn) {
+  const tool     = btn.dataset.tool;
+  const params   = JSON.parse(btn.dataset.params || '{}');
   const filename = btn.dataset.filename;
-  const title    = btn.dataset.title;
 
   const orig = btn.innerHTML;
   btn.disabled  = true;
-  btn.innerHTML = '<span style="opacity:.7">Menyiapkan...</span>';
+  btn.innerHTML = '<span style="opacity:.7">Mengambil data...</span>';
 
+  try {
+    // 1. Fetch all data directly from MCP server
+    const mcpUrl = buildMcpUrl(tool, params);
+    const mcpRes = await fetch(mcpUrl);
+    if (!mcpRes.ok) throw new Error(`MCP error ${mcpRes.status}`);
+    const mcpData = await mcpRes.json();
+
+    // 2. Extract rows from response
+    const rows = extractRows(mcpData);
+    if (!rows.length) throw new Error('Tidak ada data yang bisa diunduh');
+
+    // 3. Send to /api/csv to generate file
+    const csvRes = await fetch('/api/csv', {
+      method:  'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body:    JSON.stringify({ rows, filename }),
+    });
+    if (!csvRes.ok) throw new Error('Gagal membuat CSV');
+
+    // 4. Trigger download
+    const blob = await csvRes.blob();
+    const url  = URL.createObjectURL(blob);
+    const a    = document.createElement('a');
+    a.href     = url;
+    a.download = filename + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+
+    btn.innerHTML = '<span>✓ Selesai</span>';
+    setTimeout(() => { btn.innerHTML = orig; btn.disabled = false; }, 2000);
+  } catch (e) {
+    alert('Gagal mengunduh: ' + e.message);
+    btn.disabled  = false;
+    btn.innerHTML = orig;
+  }
+}
+
+// ── Download CSV from inline rows (backward compat) ───
+async function downloadCSV(btn) {
+  const rows     = JSON.parse(btn.dataset.rows);
+  const filename = btn.dataset.filename;
+  const orig     = btn.innerHTML;
+  btn.disabled   = true;
+  btn.innerHTML  = '<span style="opacity:.7">Menyiapkan...</span>';
   try {
     const res = await fetch('/api/csv', {
       method:  'POST',
       headers: { 'Content-Type': 'application/json' },
       body:    JSON.stringify({ rows, filename }),
     });
-
     if (!res.ok) throw new Error('Gagal membuat CSV');
-
     const blob = await res.blob();
     const url  = URL.createObjectURL(blob);
     const a    = document.createElement('a');
@@ -1007,15 +1129,17 @@ async function downloadCSV(btn) {
 // MARKDOWN
 // ══════════════════════════════════════════════════════
 function formatMarkdown(text) {
-  // Extract and render LIST_DATA block first
-  const listData = parseListData(text);
-  const cleanText = listData ? stripListDataBlock(text) : text;
+  // Try TOOL_REF first (new: fetch CSV from MCP directly)
+  const toolRef  = parseToolRef(text);
+  // Fallback to LIST_DATA (old: rows embedded in Dify response)
+  const listData = !toolRef ? parseListData(text) : null;
+  const cleanText = stripDataBlock(text);
 
   const mdHtml = cleanText
     .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>')
     .replace(/(?<!\*)\*(?!\*)(.+?)(?<!\*)\*(?!\*)/g, '<em>$1</em>')
     .replace(/^###\s+(.+)$/gm, '<h3>$1</h3>')
-    .replace(/^[-•]\s+(.+)$/gm, '<li>$1</li>')
+    .replace(/^[-\u2022]\s+(.+)$/gm, '<li>$1</li>')
     .replace(/^\d+\.\s+(.+)$/gm, '<li>$1</li>')
     .replace(/(<li>.*<\/li>\n?)+/gs, m => `<ul>${m}</ul>`)
     .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -1029,7 +1153,10 @@ function formatMarkdown(text) {
     .filter(Boolean)
     .join('');
 
-  return mdHtml + (listData ? renderListBlock(listData) : '');
+  const blockHtml = toolRef  ? renderToolRefBlock(toolRef)
+                  : listData ? renderListBlock(listData)
+                  : '';
+  return mdHtml + blockHtml;
 }
 
 // ══════════════════════════════════════════════════════
