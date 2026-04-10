@@ -440,6 +440,24 @@
     }
     .list-more strong { color: var(--text); }
 
+    /* ── Stat block (table + bar chart) ── */
+    .stat-block { margin-top:10px; border:1px solid var(--border2); border-radius:10px; overflow:hidden; font-size:13px; }
+    .stat-table-wrap { overflow-x:auto; max-height:260px; overflow-y:auto; }
+    .stat-table-wrap::-webkit-scrollbar { width:3px; height:3px; }
+    .stat-table-wrap::-webkit-scrollbar-thumb { background:var(--border2); border-radius:3px; }
+    .stat-table { width:100%; border-collapse:collapse; font-size:12.5px; min-width:200px; }
+    .stat-table th { background:var(--bg2); color:var(--muted); font-weight:600; font-size:11px; text-transform:uppercase; letter-spacing:.04em; padding:7px 10px; text-align:left; border-bottom:1px solid var(--border); white-space:nowrap; position:sticky; top:0; }
+    .stat-table td { padding:7px 10px; color:var(--text); border-bottom:1px solid var(--border); }
+    .stat-table tr:last-child td { border-bottom:none; }
+    .stat-table tr:hover td { background:rgba(255,255,255,.03); }
+    .stat-table td.stat-num { text-align:right; font-weight:600; color:var(--accent2); font-variant-numeric:tabular-nums; }
+    .stat-bar-body { padding:10px 12px; display:flex; flex-direction:column; gap:8px; }
+    .stat-bar-row { display:grid; grid-template-columns:140px 1fr 52px; align-items:center; gap:8px; }
+    .stat-bar-label { font-size:12px; color:var(--text); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+    .stat-bar-track { background:rgba(255,255,255,.06); border-radius:4px; height:12px; overflow:hidden; }
+    .stat-bar-fill { height:100%; background:var(--accent); border-radius:4px; transition:width .4s ease; }
+    .stat-bar-val { font-size:12px; font-weight:600; color:var(--accent2); text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+
     .typing-dots { display: flex; gap: 4px; padding: 6px 2px; align-items: center; }
     .typing-dots span { width: 6px; height: 6px; background: var(--muted); border-radius: 50%; animation: dotBounce 1.2s ease-in-out infinite; }
     .typing-dots span:nth-child(2){animation-delay:.2s} .typing-dots span:nth-child(3){animation-delay:.4s}
@@ -936,11 +954,36 @@ function extractOutermostObject(str) {
   return null;
 }
 
+function parseStatData(text) {
+  const patterns = [
+    /```(?:json)?\s*STAT_DATA\s*([\s\S]*?)```/,
+    /STAT_DATA\s*(\{[\s\S]*)/,
+  ];
+  for (const re of patterns) {
+    const m = text.match(re);
+    if (!m) continue;
+    const raw = m[1].trim();
+    try {
+      const data = JSON.parse(raw.split('\n')[0].trim());
+      if (data.type === 'table' || data.type === 'bar') return data;
+    } catch {}
+    const jsonStr = extractOutermostObject(raw);
+    if (!jsonStr) continue;
+    try {
+      const data = JSON.parse(jsonStr);
+      if (data.type === 'table' || data.type === 'bar') return data;
+    } catch {}
+  }
+  return null;
+}
+
 function stripDataBlock(text) {
   text = text.replace(/```(?:json)?\s*TOOL_REF[\s\S]*?```/g, '');
   text = text.replace(/TOOL_REF[\s\S]*/g, '');
   text = text.replace(/```(?:json)?\s*LIST_DATA[\s\S]*?```/g, '');
   text = text.replace(/LIST_DATA[\s\S]*/g, '');
+  text = text.replace(/```(?:json)?\s*STAT_DATA[\s\S]*?```/g, '');
+  text = text.replace(/STAT_DATA[\s\S]*/g, '');
   return text.trim();
 }
 
@@ -1055,6 +1098,31 @@ function renderListBlock(data) {
     </div>`;
 }
 
+function renderStatTable(data) {
+  const { title, columns, rows } = data;
+  const safeTitle = escHtml(title || 'Statistik');
+  const thCells = (columns || []).map(c => `<th>${escHtml(String(c))}</th>`).join('');
+  const trRows = (rows || []).map(row =>
+    `<tr>${row.map(cell => {
+      const isNum = typeof cell === 'number' || (typeof cell === 'string' && /^[\d.,]+%?$/.test(cell.trim()));
+      return `<td class="${isNum ? 'stat-num' : ''}">${escHtml(String(cell ?? '—'))}</td>`;
+    }).join('')}</tr>`
+  ).join('');
+  return `<div class="stat-block"><div class="list-header"><span class="list-title">${safeTitle}</span></div><div class="stat-table-wrap"><table class="stat-table"><thead><tr>${thCells}</tr></thead><tbody>${trRows}</tbody></table></div></div>`;
+}
+
+function renderStatBar(data) {
+  const { title, labels, values } = data;
+  const safeTitle = escHtml(title || 'Statistik');
+  const maxVal = Math.max(...(values || [1]), 1);
+  const rows = (labels || []).map((label, i) => {
+    const val = values[i] ?? 0;
+    const pct = Math.round((val / maxVal) * 100);
+    return `<div class="stat-bar-row"><span class="stat-bar-label">${escHtml(String(label))}</span><div class="stat-bar-track"><div class="stat-bar-fill" style="width:${pct}%"></div></div><span class="stat-bar-val">${escHtml(String(val))}</span></div>`;
+  }).join('');
+  return `<div class="stat-block"><div class="list-header"><span class="list-title">${safeTitle}</span></div><div class="stat-bar-body">${rows}</div></div>`;
+}
+
 function escAttr(str) {
   return str.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
 }
@@ -1147,6 +1215,7 @@ function formatMarkdown(text) {
   const toolRef  = parseToolRef(text);
   // Fallback to LIST_DATA (old: rows embedded in Dify response)
   const listData = !toolRef ? parseListData(text) : null;
+  const statData = !toolRef && !listData ? parseStatData(text) : null;
   const cleanText = stripDataBlock(text);
 
   const mdHtml = cleanText
@@ -1169,10 +1238,13 @@ function formatMarkdown(text) {
 
   const blockHtml = toolRef  ? renderToolRefBlock(toolRef)
                   : listData ? renderListBlock(listData)
+                  : statData && statData.type === 'table' ? renderStatTable(statData)
+                  : statData && statData.type === 'bar'   ? renderStatBar(statData)
                   : '';
   // Debug: log what Dify sent so we can see if TOOL_REF is present
   if (text.includes('TOOL_REF')) console.log('[TOOL_REF found]', text.substring(text.indexOf('TOOL_REF'), text.indexOf('TOOL_REF') + 200));
   else if (text.includes('LIST_DATA')) console.log('[LIST_DATA found]');
+  else if (text.includes('STAT_DATA')) console.log('[STAT_DATA found]', text.substring(text.indexOf('STAT_DATA'), text.indexOf('STAT_DATA') + 200));
   else if (text.length > 50) console.log('[No marker] full text:', text.substring(0, 300));
 
   return mdHtml + blockHtml;
